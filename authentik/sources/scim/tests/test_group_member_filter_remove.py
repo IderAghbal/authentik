@@ -40,7 +40,8 @@ class TestSCIMGroupMemberFilterRemove(APITestCase):
             },
         )
         url = reverse(
-            "authentik_sources_scim:v2-groups", kwargs={"source_slug": source.slug, "group_id": group}
+            "authentik_sources_scim:v2-groups",
+            kwargs={"source_slug": source.slug, "group_id": group},
         )
         response = self.client.patch(
             url,
@@ -54,6 +55,8 @@ class TestSCIMGroupMemberFilterRemove(APITestCase):
             **auth,
         )
         self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual([str(user.uuid) for user in Group.objects.get(pk=group).users.all()], [second])
+        self.assertEqual(
+            [str(user.uuid) for user in Group.objects.get(pk=group).users.all()], [second]
+        )
         read = self.client.get(url, **auth).json()
         self.assertEqual([member["value"] for member in read["members"]], [second])
