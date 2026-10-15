@@ -22,18 +22,20 @@ authentik's own layout, and is merged into `atelier/main` with `--no-ff`.
 | `fix/scim-never-returned` | A password sent by the client was stored and returned. | `sources/scim/tests/test_never_returned.py` |
 | `fix/scim-error-responses` | Errors under a source rendered the HTML error page. | `sources/scim/tests/test_error_responses.py` |
 | `fix/scim-provider-static-scope` | The SCIM provider ran the policy engine once per user of the instance on every page of a full sync. | `providers/scim/tests/test_static_scope.py` |
+| `fix/scim-source-token-scope` | A SCIM source's token authenticated every endpoint of the API as the source's service account. | `sources/scim/tests/test_token_scope.py` |
+| `fix/scim-provider-full-sync-queue` | A change to one user or group waited behind a full sync's queued pages, for most of the sync. | `providers/scim/tests/test_sync_queue.py` |
 
 ## Moving to the next release
 
 1. Rebase each `fix/*` branch onto the new release tag, resolve, and run
    its test on the branch: it fails on the tag and passes on the branch.
-2. Start the new `atelier/main` from the new tag and merge every branch
-   with `--no-ff`. `atelier/main` is never force-pushed: the image records
-   the commit it was built from.
-3. **The migration:** `sources/scim/migrations/fork_0001_one_source_per_object.py`
+2. **The migration:** `sources/scim/migrations/fork_0001_one_source_per_object.py`
    depends on the newest migration of `authentik_sources_scim` the release
    ships. Point its dependency at the new release's newest one, so the app
    keeps one leaf.
-4. Run the image's suite in Atelier's repository
-   (`infrastructure/k8s/tools/authentik/tests/run.py matrix`) before the
-   image moves.
+3. Merge the new tag into `atelier/main`, then each rebased branch with
+   `--no-ff`, each conflict resolved to the branch. `atelier/main` is never
+   rebuilt or force-pushed: the image records the commit it was built from.
+4. Regenerate the image's patches from the new `atelier/main` and run its
+   suite in Atelier's repository (`infrastructure/k8s/tools/authentik`,
+   `regen.py` then `tests/run.py matrix`) before the image moves.
