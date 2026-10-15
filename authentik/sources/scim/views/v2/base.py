@@ -12,6 +12,7 @@ from rest_framework.renderers import JSONRenderer
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.views import exception_handler as rest_exception_handler
 from scim2_filter_parser.transpilers.django_q_object import get_query
 from structlog import BoundLogger
 from structlog.stdlib import get_logger
@@ -21,7 +22,11 @@ from authentik.core.sources.mapper import SourceMapper
 from authentik.lib.sync.mapper import PropertyMappingManager
 from authentik.sources.scim.models import SCIMSource
 from authentik.sources.scim.views.v2.auth import SCIMTokenAuth
-from authentik.sources.scim.views.v2.exceptions import SCIMNotFoundError
+from authentik.sources.scim.views.v2.exceptions import (
+    SCIMError,
+    SCIMNotFoundError,
+    SCIMNotImplementedError,
+)
 
 SCIM_CONTENT_TYPE = "application/scim+json"
 
@@ -54,6 +59,9 @@ class SCIMView(APIView):
 
     def get_authenticators(self):
         return [SCIMTokenAuth(self)]
+
+    def get_exception_handler(self):
+        return scim_exception_handler
 
     def remove_excluded_attributes(self, data: dict):
         """Remove attributes specified in excludedAttributes"""
@@ -125,6 +133,36 @@ class SCIMObjectView(SCIMView):
             request=self.request,
             data=data,
         )
+
+
+def scim_exception_handler(exc: Exception, context: dict) -> Response:
+    """Answer every error as a SCIM error (RFC 7644 3.12): the framework's
+    own errors are reshaped, and an unhandled one answers 500 instead of
+    rendering the HTML error page."""
+    response = rest_exception_handler(exc, context)
+    if response is None:
+        get_logger().warning("Unhandled exception in SCIM request", exc=exc)
+        response = Response(status=500)
+        detail = "An internal error occurred."
+    elif isinstance(response.data, dict) and "schemas" in response.data:
+        return response
+    else:
+        detail = response.data.get("detail") if isinstance(response.data, dict) else None
+    response.data = SCIMError(
+        status=response.status_code, detail=str(detail) if detail else None
+    ).model_dump(mode="json", exclude_none=True)
+    return response
+
+
+class SCIMUnknownView(SCIMView):
+    """Any other path under a source's base URL: 501 for a search by POST,
+    which is not supported (RFC 7644 3.4.3), and 404 otherwise."""
+
+    def initial(self, request: Request, *args, **kwargs) -> None:
+        super().initial(request, *args, **kwargs)
+        if kwargs.get("rest", "").rstrip("/").endswith(".search"):
+            raise SCIMNotImplementedError("Search by POST is not supported.")
+        raise SCIMNotFoundError("Not found.")
 
 
 class SCIMRootView(SCIMView):
