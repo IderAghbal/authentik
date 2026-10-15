@@ -111,7 +111,7 @@ class GroupsView(SCIMObjectView):
                     continue
                 query |= Q(uuid=member.value)
             if query:
-                group.users.set(User.objects.filter(query))
+                group.users.set(self.own_users(query))
         data["members"] = self._convert_members(group)
         if not connection:
             connection, _ = SCIMSourceGroup.objects.update_or_create(
@@ -152,6 +152,15 @@ class GroupsView(SCIMObjectView):
         connection = self.update_group(connection, request.data)
         return Response(self.group_to_scim(connection), status=200)
 
+    def own_users(self, query: Q):
+        """The users query names that this source created. A member another
+        source created, or none did, is ignored."""
+        users = User.objects.filter(query)
+        own = users.filter(scimsourceuser__source=self.source)
+        if ignored := users.exclude(pk__in=own.values("pk")).count():
+            self.logger.warning("Ignoring members this source did not create", count=ignored)
+        return own
+
     def _convert_members(self, group: Group):
         users = []
         for user in group.users.all().order_by("uuid"):
@@ -181,7 +190,7 @@ class GroupsView(SCIMObjectView):
                     for member in operation.value:
                         query |= Q(uuid=member["value"])
                     if query:
-                        connection.group.users.add(*User.objects.filter(query))
+                        connection.group.users.add(*self.own_users(query))
                 elif operation.op == PatchOp.remove:
                     if not isinstance(operation.value, list):
                         operation.value = [operation.value]
@@ -189,7 +198,7 @@ class GroupsView(SCIMObjectView):
                     for member in operation.value:
                         query |= Q(uuid=member["value"])
                     if query:
-                        connection.group.users.remove(*User.objects.filter(query))
+                        connection.group.users.remove(*self.own_users(query))
         patcher = SCIMPatchProcessor()
         patched_data = patcher.apply_patches(
             connection.attributes, request.data.get("Operations", [])
