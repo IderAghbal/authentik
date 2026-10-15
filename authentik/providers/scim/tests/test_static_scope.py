@@ -1,6 +1,7 @@
 """Test SCIM provider user scoping with static bindings"""
 
 import sys
+from random import Random
 from time import monotonic
 
 from django.db import connection
@@ -71,6 +72,44 @@ class TestSCIMStaticScope(TestCase):
                 for order, binding in enumerate(bindings):
                     PolicyBinding.objects.create(target=self.app, order=order, **binding)
                 self.assertEqual(set(self.provider.get_object_qs(User).values_list("pk", flat=True)), self.engine())
+
+    def test_same_scope_as_engine_over_generated_bindings(self):
+        """Over generated binding sets the scope is the engine's, user by user:
+        empty bindings, bindings naming a group and a user, negations,
+        disabled bindings, both modes, and a hierarchy with a deep chain and a
+        group of two parents, users seated anywhere in it"""
+        rng = Random(305)
+        groups = [Group.objects.create(name=generate_id()) for _ in range(6)]
+        groups[1].parents.add(groups[0])
+        groups[2].parents.add(groups[1])
+        groups[3].parents.add(groups[2])
+        groups[4].parents.add(groups[0], groups[5])
+        users = self.users(12)
+        for user in users:
+            for group in rng.sample(groups, rng.randint(0, 2)):
+                group.users.add(user)
+        for case in range(120):
+            PolicyBinding.objects.filter(target=self.app).delete()
+            self.app.policy_engine_mode = rng.choice(
+                [PolicyEngineMode.MODE_ANY, PolicyEngineMode.MODE_ALL]
+            )
+            self.app.save()
+            shape = []
+            for order in range(rng.randint(0, 4)):
+                kind = rng.choice(["empty", "user", "group", "group and user"])
+                binding = {
+                    "negate": rng.random() < 0.3,
+                    "enabled": rng.random() < 0.85,
+                    "user": rng.choice(users) if "user" in kind else None,
+                    "group": rng.choice(groups) if "group" in kind else None,
+                }
+                PolicyBinding.objects.create(target=self.app, order=order, **binding)
+                shape.append((kind, binding["negate"], binding["enabled"]))
+            with self.subTest(case=case, mode=self.app.policy_engine_mode, bindings=shape):
+                provider = SCIMProvider.objects.get(pk=self.provider.pk)
+                self.assertEqual(
+                    set(provider.get_object_qs(User).values_list("pk", flat=True)), self.engine()
+                )
 
     def test_cost_flat_in_users(self):
         """Scoping a page costs the same queries at 2,000 and 20,000 users"""
