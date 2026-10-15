@@ -204,7 +204,9 @@ class SCIMProvider(OutgoingSyncProvider, BackchannelProvider):
                         pk__in=[
                             user.pk
                             for user in base
-                            if PolicyEngine(self.backchannel_application, user, None).build().passing
+                            if PolicyEngine(self.backchannel_application, user, None)
+                            .build()
+                            .passing
                         ]
                     )
             return base.order_by("pk")

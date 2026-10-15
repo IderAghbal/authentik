@@ -15,6 +15,9 @@ from authentik.policies.engine import PolicyEngine
 from authentik.policies.models import PolicyBinding, PolicyEngineMode
 from authentik.providers.scim.models import SCIMProvider
 
+NEGATED = 0.3
+ENABLED = 0.85
+
 
 class TestSCIMStaticScope(TestCase):
     """Static bindings scope users as the policy engine does, in one query"""
@@ -31,10 +34,14 @@ class TestSCIMStaticScope(TestCase):
         self.app.backchannel_providers.add(self.provider)
 
     def users(self, count, group=None):
-        created = User.objects.bulk_create(User(username=generate_id(), name="test") for _ in range(count))
+        created = User.objects.bulk_create(
+            User(username=generate_id(), name="test") for _ in range(count)
+        )
         if group:
             through = User.groups.through
-            through.objects.bulk_create(through(user_id=user.pk, group_id=group.pk) for user in created)
+            through.objects.bulk_create(
+                through(user_id=user.pk, group_id=group.pk) for user in created
+            )
         return created
 
     def engine(self):
@@ -66,12 +73,17 @@ class TestSCIMStaticScope(TestCase):
             with self.subTest(shape=name):
                 PolicyBinding.objects.filter(target=self.app).delete()
                 self.app.policy_engine_mode = (
-                    PolicyEngineMode.MODE_ALL if name.endswith(", all") else PolicyEngineMode.MODE_ANY
+                    PolicyEngineMode.MODE_ALL
+                    if name.endswith(", all")
+                    else PolicyEngineMode.MODE_ANY
                 )
                 self.app.save()
                 for order, binding in enumerate(bindings):
                     PolicyBinding.objects.create(target=self.app, order=order, **binding)
-                self.assertEqual(set(self.provider.get_object_qs(User).values_list("pk", flat=True)), self.engine())
+                self.assertEqual(
+                    set(self.provider.get_object_qs(User).values_list("pk", flat=True)),
+                    self.engine(),
+                )
 
     def test_same_scope_as_engine_over_generated_bindings(self):
         """Over generated binding sets the scope is the engine's, user by user:
@@ -98,8 +110,8 @@ class TestSCIMStaticScope(TestCase):
             for order in range(rng.randint(0, 4)):
                 kind = rng.choice(["empty", "user", "group", "group and user"])
                 binding = {
-                    "negate": rng.random() < 0.3,
-                    "enabled": rng.random() < 0.85,
+                    "negate": rng.random() < NEGATED,
+                    "enabled": rng.random() < ENABLED,
                     "user": rng.choice(users) if "user" in kind else None,
                     "group": rng.choice(groups) if "group" in kind else None,
                 }
@@ -123,8 +135,9 @@ class TestSCIMStaticScope(TestCase):
             with CaptureQueriesContext(connection) as queries:
                 list(self.provider.get_paginator(User).page(1).object_list)
             costs[total] = len(queries)
+            elapsed = monotonic() - started
             sys.stderr.write(
-                f"\nscoping one page at {total} users: {len(queries)} queries, {monotonic() - started:.2f} s\n"
+                f"\nscoping one page at {total} users: {len(queries)} queries, {elapsed:.2f} s\n"
             )
         self.assertEqual(costs[2_000], costs[20_000])
         self.assertLess(costs[20_000], 10)
