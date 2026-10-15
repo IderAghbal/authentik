@@ -182,6 +182,7 @@ class GroupsView(SCIMObjectView):
         if not connection:
             raise SCIMNotFoundError("Group not found.")
 
+        operations = []
         for _op in request.data.get("Operations", []):
             operation = PatchOperation.model_validate(_op)
             if operation.op.lower() not in ["add", "remove", "replace"]:
@@ -189,6 +190,7 @@ class GroupsView(SCIMObjectView):
             if member := self.filtered_member(operation):
                 connection.group.users.remove(*User.objects.filter(uuid=member))
                 continue
+            operations.append(_op)
             attr_path = AttrPath(f'{operation.path} eq ""', {})
             if attr_path.first_path == ("members", None, None):
                 # FIXME: this can probably be de-duplicated
@@ -209,9 +211,7 @@ class GroupsView(SCIMObjectView):
                     if query:
                         connection.group.users.remove(*User.objects.filter(query))
         patcher = SCIMPatchProcessor()
-        patched_data = patcher.apply_patches(
-            connection.attributes, request.data.get("Operations", [])
-        )
+        patched_data = patcher.apply_patches(connection.attributes, operations)
         patched_data["members"] = self._convert_members(connection.group)
         if patched_data != connection.attributes:
             self.update_group(connection, patched_data, apply_members=False)
