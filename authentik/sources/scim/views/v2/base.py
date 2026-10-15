@@ -12,7 +12,10 @@ from rest_framework.renderers import JSONRenderer
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from scim2_filter_parser.transpilers.django_q_object import get_query
+from scim2_filter_parser.lexer import SCIMLexer
+from scim2_filter_parser.parser import SCIMParser as FilterParser
+from scim2_filter_parser.parser import SCIMParserError
+from scim2_filter_parser.transpilers.django_q_object import Transpiler
 from structlog import BoundLogger
 from structlog.stdlib import get_logger
 
@@ -21,9 +24,26 @@ from authentik.core.sources.mapper import SourceMapper
 from authentik.lib.sync.mapper import PropertyMappingManager
 from authentik.sources.scim.models import SCIMSource
 from authentik.sources.scim.views.v2.auth import SCIMTokenAuth
-from authentik.sources.scim.views.v2.exceptions import SCIMNotFoundError
+from authentik.sources.scim.views.v2.exceptions import (
+    SCIMError,
+    SCIMErrorTypes,
+    SCIMNotFoundError,
+    SCIMValidationError,
+)
 
 SCIM_CONTENT_TYPE = "application/scim+json"
+
+
+class FilterTranspiler(Transpiler):
+    """Refuses an attribute the endpoint does not filter on, which the
+    library's transpiler drops: dropped from an `and`, it widens the
+    result instead of failing the filter."""
+
+    def visit_AttrPath(self, node):
+        mapped = super().visit_AttrPath(node)
+        if mapped is None:
+            raise ValueError("an attribute this endpoint does not filter on")
+        return mapped
 
 
 class SCIMParser(JSONParser):
@@ -71,18 +91,29 @@ class SCIMView(APIView):
         if self.model == User:
             attr_map = {
                 ("userName", None, None): "user__username",
+                ("externalId", None, None): "external_id",
                 ("active", None, None): "user__is_active",
                 ("name", "familyName", None): "attributes__familyName",
             }
         elif self.model == Group:
             attr_map = {
                 ("displayName", None, None): "group__name",
+                ("externalId", None, None): "external_id",
                 ("members", None, None): "group__users",
             }
-        return get_query(
-            path,
-            attr_map,
-        )
+        try:
+            query = FilterTranspiler(attr_map).transpile(
+                FilterParser().parse(SCIMLexer().tokenize(path))
+            )
+        except (SCIMParserError, ValueError, NotImplementedError):
+            query = None
+        if query is None:
+            # RFC 7644 3.4.2.2: a filter the server cannot read is the
+            # client's error.
+            raise SCIMValidationError(
+                SCIMError(scimType=SCIMErrorTypes.invalid_filter, detail="Invalid filter.", status=400)
+            )
+        return query
 
     def paginate_query(self, query: QuerySet) -> Page:
         per_page = int(self.request.tenant.pagination_default_page_size)
