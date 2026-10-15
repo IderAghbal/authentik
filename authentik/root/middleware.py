@@ -224,6 +224,7 @@ class ClientIPMiddleware:
             Token.filter_not_expired(
                 key=request.META.get(self.outpost_token_header), intent=TokenIntents.INTENT_API
             )
+            .filter(scimsource__isnull=True)
             .select_related("user")
             .first()
         )
