@@ -1,10 +1,12 @@
 """SCIM Provider models"""
 
+from functools import reduce
+from operator import and_, or_
 from typing import Any, Self
 from uuid import uuid4
 
 from django.db import models
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.templatetags.static import static
 from django.utils.translation import gettext_lazy as _
 from dramatiq.actor import Actor
@@ -18,6 +20,7 @@ from authentik.lib.sync.outgoing.base import BaseOutgoingSyncClient
 from authentik.lib.sync.outgoing.models import OutgoingSyncProvider
 from authentik.lib.utils.time import timedelta_from_string, timedelta_string_validator
 from authentik.policies.engine import PolicyEngine
+from authentik.policies.models import PolicyBinding, PolicyEngineMode
 from authentik.providers.scim.clients.auth import SCIMTokenAuth
 
 LOGGER = get_logger()
@@ -193,13 +196,17 @@ class SCIMProvider(OutgoingSyncProvider, BackchannelProvider):
             # Filter users by their access to the backchannel application if an application is set
             # This handles both policy bindings and group_filters
             if self.backchannel_application:
-                base = base.filter(
-                    pk__in=[
-                        user.pk
-                        for user in base
-                        if PolicyEngine(self.backchannel_application, user, None).build().passing
-                    ]
-                )
+                static = self.static_scope()
+                if static is not None:
+                    base = base.filter(static)
+                else:
+                    base = base.filter(
+                        pk__in=[
+                            user.pk
+                            for user in base
+                            if PolicyEngine(self.backchannel_application, user, None).build().passing
+                        ]
+                    )
             return base.order_by("pk")
 
         if type == Group:
@@ -213,6 +220,40 @@ class SCIMProvider(OutgoingSyncProvider, BackchannelProvider):
 
             return base.order_by("pk")
         raise ValueError(f"Invalid type {type}")
+
+    def static_scope(self) -> Q | None:
+        """The users the backchannel application's bindings pass, as one
+        query, when every binding names a user or a group; None when a
+        binding carries a policy, which only the policy engine evaluates.
+
+        Each binding passes users as the engine's static bindings do: a user
+        binding that user, a group binding the members of the group and of
+        the groups below it, a negated binding everyone else. Mode any
+        passes users one binding passes, mode all users every binding
+        passes, and no binding passes everyone."""
+        app = self.backchannel_application
+        bindings = list(PolicyBinding.objects.filter(target=app, enabled=True))
+        if any(binding.policy_id for binding in bindings):
+            return None
+        passes = []
+        for binding in bindings:
+            matches = []
+            if binding.user_id:
+                matches.append(Q(pk=binding.user_id))
+            if binding.group_id:
+                members = User.objects.filter(
+                    groups__in=Group.objects.filter(pk=binding.group_id).with_descendants()
+                )
+                matches.append(Q(pk__in=members.values("pk")))
+            if not matches:
+                continue
+            if binding.negate:
+                passes.append(reduce(or_, [~match for match in matches]))
+            else:
+                passes.append(reduce(or_, matches))
+        if not passes:
+            return Q()
+        return reduce(and_ if app.policy_engine_mode == PolicyEngineMode.MODE_ALL else or_, passes)
 
     @classmethod
     def get_object_mappings(cls, obj: User | Group) -> list[tuple[str, str]]:
