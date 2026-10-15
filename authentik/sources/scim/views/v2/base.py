@@ -110,13 +110,15 @@ class SCIMView(APIView):
             query = FilterTranspiler(attr_map).transpile(
                 FilterParser().parse(SCIMLexer().tokenize(path))
             )
-        except (SCIMParserError, ValueError, NotImplementedError):
+        except SCIMParserError, ValueError, NotImplementedError:
             query = None
         if query is None:
             # RFC 7644 3.4.2.2: a filter the server cannot read is the
             # client's error.
             raise SCIMValidationError(
-                SCIMError(scimType=SCIMErrorTypes.invalid_filter, detail="Invalid filter.", status=400)
+                SCIMError(
+                    scimType=SCIMErrorTypes.invalid_filter, detail="Invalid filter.", status=400
+                )
             )
         return query
 

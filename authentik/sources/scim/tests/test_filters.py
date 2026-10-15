@@ -18,7 +18,9 @@ class TestSCIMFilters(APITestCase):
         self.auth = {"HTTP_AUTHORIZATION": f"Bearer {self.source.token.key}"}
 
     def url(self, kind):
-        return reverse(f"authentik_sources_scim:v2-{kind}", kwargs={"source_slug": self.source.slug})
+        return reverse(
+            f"authentik_sources_scim:v2-{kind}", kwargs={"source_slug": self.source.slug}
+        )
 
     def post(self, kind, data):
         response = self.client.post(
@@ -38,7 +40,9 @@ class TestSCIMFilters(APITestCase):
         )
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual([r["id"] for r in response.json()["Resources"]], [user["id"]])
-        response = self.client.get(self.url("groups"), {"filter": f'externalId eq "{group_id}"'}, **self.auth)
+        response = self.client.get(
+            self.url("groups"), {"filter": f'externalId eq "{group_id}"'}, **self.auth
+        )
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual([r["externalId"] for r in response.json()["Resources"]], [group_id])
 
@@ -46,7 +50,12 @@ class TestSCIMFilters(APITestCase):
         """A filter that does not parse or names an attribute the endpoint
         does not filter on answers 400 invalidFilter"""
         self.post("users", {"userName": "alice", "externalId": generate_id()})
-        for query in ['userName zz "x"', 'nickName eq "x"', 'userName eq "alice" and nickName eq "x"', "((("]:
+        for query in [
+            'userName zz "x"',
+            'nickName eq "x"',
+            'userName eq "alice" and nickName eq "x"',
+            "(((",
+        ]:
             with self.subTest(query=query):
                 response = self.client.get(self.url("users"), {"filter": query}, **self.auth)
                 self.assertEqual(response.status_code, 400, response.content)
