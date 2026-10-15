@@ -7,7 +7,7 @@ from rest_framework.test import APITestCase
 
 from authentik.core.models import Group, User
 from authentik.lib.generators import generate_id
-from authentik.sources.scim.models import SCIMSource
+from authentik.sources.scim.models import SCIMSource, SCIMSourceGroup, SCIMSourcePropertyMapping
 from authentik.sources.scim.views.v2.base import SCIM_CONTENT_TYPE
 
 
@@ -37,7 +37,12 @@ class TestSCIMSourceNamespaces(APITestCase):
             source,
             "post",
             "users",
-            {"userName": username, "externalId": generate_id(), "name": {"formatted": username}, **extra},
+            {
+                "userName": username,
+                "externalId": generate_id(),
+                "name": {"formatted": username},
+                **extra,
+            },
         )
         self.assertEqual(response.status_code, 201, response.content)
         return response.json()
@@ -62,10 +67,16 @@ class TestSCIMSourceNamespaces(APITestCase):
         """The same displayName from two sources makes two groups, and a
         delete from one source leaves the other's"""
         group_a = self.call(
-            self.source_a, "post", "groups", {"displayName": "Engineering", "externalId": generate_id()}
+            self.source_a,
+            "post",
+            "groups",
+            {"displayName": "Engineering", "externalId": generate_id()},
         )
         group_b = self.call(
-            self.source_b, "post", "groups", {"displayName": "Engineering", "externalId": generate_id()}
+            self.source_b,
+            "post",
+            "groups",
+            {"displayName": "Engineering", "externalId": generate_id()},
         )
         self.assertEqual((group_a.status_code, group_b.status_code), (201, 201), group_b.content)
         self.assertNotEqual(group_a.json()["id"], group_b.json()["id"])
@@ -118,3 +129,42 @@ class TestSCIMSourceNamespaces(APITestCase):
         response = self.call(self.source_a, "delete", "users", object_id=str(admin.uuid))
         self.assertEqual(response.status_code, 404)
         self.assertTrue(User.objects.filter(pk=admin.pk).exists())
+
+    def test_conflict_on_the_mapped_name(self):
+        """A group its mappings name from another attribute conflicts on that
+        name: none is created beside the group holding it, and none adopted"""
+        self.source_a.group_property_mappings.set(
+            [
+                SCIMSourcePropertyMapping.objects.create(
+                    name=generate_id(), expression='return {"name": data.get("team")}'
+                )
+            ]
+        )
+        user = self.user(self.source_a, generate_id())["id"]
+        first = self.call(
+            self.source_a,
+            "post",
+            "groups",
+            {"displayName": generate_id(), "externalId": generate_id(), "team": "core"},
+        )
+        self.assertEqual(first.status_code, 201, first.content)
+        outside = Group.objects.create(name=f"{self.source_a.slug}.outside")
+        for team in ("core", "outside"):
+            with self.subTest(team=team):
+                before = set(Group.objects.values_list("pk", flat=True))
+                response = self.call(
+                    self.source_a,
+                    "post",
+                    "groups",
+                    {
+                        "displayName": generate_id(),
+                        "externalId": generate_id(),
+                        "team": team,
+                        "members": [{"value": user}],
+                    },
+                )
+                self.assertEqual(response.status_code, 409, response.content)
+                self.assertEqual(set(Group.objects.values_list("pk", flat=True)), before)
+        self.assertFalse(SCIMSourceGroup.objects.filter(group=outside).exists())
+        self.assertFalse(outside.users.exists())
+        self.assertFalse(Group.objects.get(pk=first.json()["id"]).users.exists())
