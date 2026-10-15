@@ -168,6 +168,8 @@ class GroupsView(SCIMObjectView):
         ).first()
         if not connection:
             raise SCIMNotFoundError("Group not found.")
+        if self.source.group_id and (refusal := seating_refusal(self.source.group)):
+            raise SCIMForbiddenError(refusal)
 
         for _op in request.data.get("Operations", []):
             operation = PatchOperation.model_validate(_op)

@@ -10,18 +10,12 @@ from authentik.core.models import Group, User
 from authentik.core.tests.utils import create_test_admin_user
 from authentik.lib.generators import generate_id
 from authentik.rbac.models import Role
-from authentik.sources.scim.models import SCIMSource, SCIMSourceUser
+from authentik.sources.scim.models import SCIMSource, SCIMSourceGroup, SCIMSourceUser
 from authentik.sources.scim.views.v2.base import SCIM_CONTENT_TYPE
 
 
-class TestSCIMSourceGroupSeating(APITestCase):
-    """A source with a group seats what it provisions there"""
-
-    def setUp(self) -> None:
-        self.group = Group.objects.create(name=generate_id())
-        self.source = SCIMSource.objects.create(
-            name=generate_id(), slug=generate_id(), group=self.group
-        )
+class SourceTestCase(APITestCase):
+    """Provisions through a source's SCIM endpoints"""
 
     def post(self, source: SCIMSource, kind: str) -> str:
         data = {"externalId": generate_id()}
@@ -34,6 +28,16 @@ class TestSCIMSourceGroupSeating(APITestCase):
         )
         self.assertEqual(response.status_code, 201, response.content)
         return response.json()["id"]
+
+
+class TestSCIMSourceGroupSeating(SourceTestCase):
+    """A source with a group seats what it provisions there"""
+
+    def setUp(self) -> None:
+        self.group = Group.objects.create(name=generate_id())
+        self.source = SCIMSource.objects.create(
+            name=generate_id(), slug=generate_id(), group=self.group
+        )
 
     def test_user_seated_until_its_connection_goes(self):
         """A provisioned user is seated, and unseated when its connection goes"""
@@ -70,7 +74,7 @@ class TestSCIMSourceGroupSeating(APITestCase):
         self.assertEqual(source.group, self.group)
 
 
-class TestSCIMSourceSeatingGuard(APITestCase):
+class TestSCIMSourceSeatingGuard(SourceTestCase):
     """A source never seats users where they would gain privileges"""
 
     def setUp(self) -> None:
@@ -144,3 +148,34 @@ class TestSCIMSourceSeatingGuard(APITestCase):
                     self.assertEqual(response.status_code, 403, response.content)
                 self.assertFalse(group.users.exists())
                 self.assertFalse(group.children.exists())
+
+    def test_patch_refuses_a_group_made_privileged(self):
+        """A members PATCH under a group that became privileged adds nobody,
+        also when the group's stored attributes already list the member, as
+        they do after a member was removed outside the source"""
+        group = Group.objects.create(name=generate_id())
+        source = SCIMSource.objects.create(name=generate_id(), slug=generate_id(), group=group)
+        user = User.objects.get(uuid=self.post(source, "users"))
+        child = self.post(source, "groups")
+        group.is_superuser = True
+        group.save()
+        connection = SCIMSourceGroup.objects.get(source=source, group__pk=child)
+        connection.attributes["members"] = [{"value": str(user.uuid)}]
+        connection.save()
+        response = self.client.patch(
+            reverse(
+                "authentik_sources_scim:v2-groups",
+                kwargs={"source_slug": source.slug, "group_id": child},
+            ),
+            data=dumps(
+                {
+                    "Operations": [
+                        {"op": "Add", "path": "members", "value": [{"value": str(user.uuid)}]}
+                    ]
+                }
+            ),
+            content_type=SCIM_CONTENT_TYPE,
+            HTTP_AUTHORIZATION=f"Bearer {source.token.key}",
+        )
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertFalse(Group.objects.get(pk=child).users.filter(pk=user.pk).exists())
