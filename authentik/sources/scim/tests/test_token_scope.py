@@ -37,6 +37,15 @@ class TestSCIMTokenScope(APITestCase):
         response = self.client.get("/if/admin/", **self.auth)
         self.assertFalse(response.wsgi_request.user.is_authenticated)
 
+    def test_deleted_source_token(self):
+        """A deleted source's token authenticates nothing: it goes with the
+        source's service account"""
+        key = self.source.token.key
+        self.source.delete()
+        self.assertFalse(Token.objects.filter(key=key).exists())
+        response = self.client.get("/api/v3/core/users/me/", HTTP_AUTHORIZATION=f"Bearer {key}")
+        self.assertIn(response.status_code, (401, 403), response.content)
+
     def test_api_token(self):
         """An API token of a user still authenticates the API"""
         user = User.objects.create(username=generate_id())
