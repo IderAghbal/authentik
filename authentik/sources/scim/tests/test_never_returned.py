@@ -22,7 +22,9 @@ class TestSCIMNeverReturned(APITestCase):
         body = {"userName": generate_id(), "externalId": generate_id(), "password": SECRET}
 
         def stored(user_id):
-            return SECRET in str(SCIMSourceUser.objects.get(source=source, user__uuid=user_id).attributes)
+            return SECRET in str(
+                SCIMSourceUser.objects.get(source=source, user__uuid=user_id).attributes
+            )
 
         response = self.client.post(
             reverse("authentik_sources_scim:v2-users", kwargs={"source_slug": source.slug}),
@@ -33,7 +35,8 @@ class TestSCIMNeverReturned(APITestCase):
         self.assertEqual(response.status_code, 201, response.content)
         user_id = response.json()["id"]
         url = reverse(
-            "authentik_sources_scim:v2-users", kwargs={"source_slug": source.slug, "user_id": user_id}
+            "authentik_sources_scim:v2-users",
+            kwargs={"source_slug": source.slug, "user_id": user_id},
         )
         self.assertNotIn(SECRET, response.content.decode())
         self.assertFalse(stored(user_id))
