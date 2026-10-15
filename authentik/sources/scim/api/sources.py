@@ -1,13 +1,15 @@
 """SCIMSource API Views"""
 
 from django.urls import reverse_lazy
+from rest_framework.exceptions import ValidationError
 from rest_framework.fields import SerializerMethodField
 from rest_framework.viewsets import ModelViewSet
 
 from authentik.core.api.sources import SourceSerializer
 from authentik.core.api.tokens import TokenSerializer
 from authentik.core.api.used_by import UsedByMixin
-from authentik.sources.scim.models import SCIMSource
+from authentik.core.models import Group
+from authentik.sources.scim.models import SCIMSource, seating_refusal
 
 
 class SCIMSourceSerializer(SourceSerializer):
@@ -15,6 +17,11 @@ class SCIMSourceSerializer(SourceSerializer):
 
     root_url = SerializerMethodField()
     token_obj = TokenSerializer(source="token", required=False, read_only=True)
+
+    def validate_group(self, group: Group | None) -> Group | None:
+        if group and (refusal := seating_refusal(group)):
+            raise ValidationError(refusal)
+        return group
 
     def get_root_url(self, instance: SCIMSource) -> str:
         """Get Root URL"""
@@ -42,6 +49,7 @@ class SCIMSourceSerializer(SourceSerializer):
             "meta_model_name",
             "managed",
             "user_path_template",
+            "group",
             "root_url",
             "token_obj",
         ]
