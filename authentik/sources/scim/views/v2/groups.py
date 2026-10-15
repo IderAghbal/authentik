@@ -17,6 +17,7 @@ from authentik.core.models import Group, User
 from authentik.providers.scim.clients.schema import SCIM_GROUP_SCHEMA, PatchOp, PatchOperation
 from authentik.providers.scim.clients.schema import Group as SCIMGroupModel
 from authentik.sources.scim.models import SCIMSourceGroup
+from authentik.sources.scim.patch.parser import SCIMPathParser
 from authentik.sources.scim.patch.processor import SCIMPatchProcessor
 from authentik.sources.scim.views.v2.base import SCIMObjectView
 from authentik.sources.scim.views.v2.exceptions import (
@@ -161,6 +162,23 @@ class GroupsView(SCIMObjectView):
             self.logger.warning("Ignoring members this source did not create", count=ignored)
         return own
 
+    def filtered_member(self, operation: PatchOperation) -> str | None:
+        """The member a remove by the filter form `members[value eq "<id>"]`
+        names, or None for any other operation."""
+        if operation.op.lower() != "remove" or not (operation.path or "").startswith("members["):
+            return None
+        components = SCIMPathParser().parse_path(operation.path)
+        if len(components) != 1 or components[0]["sub_attribute"]:
+            return None
+        condition = components[0]["filter"] or {}
+        if (
+            condition.get("type") == "comparison"
+            and condition.get("attribute") == "value"
+            and condition.get("operator", "").lower() == "eq"
+        ):
+            return condition.get("value")
+        return None
+
     def _convert_members(self, group: Group):
         users = []
         for user in group.users.all().order_by("uuid"):
@@ -180,6 +198,9 @@ class GroupsView(SCIMObjectView):
             operation = PatchOperation.model_validate(_op)
             if operation.op.lower() not in ["add", "remove", "replace"]:
                 raise SCIMValidationError()
+            if member := self.filtered_member(operation):
+                connection.group.users.remove(*self.own_users(Q(uuid=member)))
+                continue
             attr_path = AttrPath(f'{operation.path} eq ""', {})
             if attr_path.first_path == ("members", None, None):
                 # FIXME: this can probably be de-duplicated
