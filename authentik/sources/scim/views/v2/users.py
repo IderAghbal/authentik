@@ -20,6 +20,10 @@ from authentik.sources.scim.views.v2.base import SCIMObjectView
 from authentik.sources.scim.views.v2.exceptions import SCIMConflictError, SCIMNotFoundError
 
 
+# Attributes RFC 7643 marks `returned: never`: neither stored nor returned.
+NEVER_RETURNED = ("password",)
+
+
 class UsersView(SCIMObjectView):
     """SCIM User view"""
 
@@ -59,9 +63,10 @@ class UsersView(SCIMObjectView):
         )
         final_payload = payload.model_dump(mode="json", exclude_unset=True)
         final_payload.update(scim_user.attributes)
-        return self.remove_excluded_attributes(
-            SCIMUserModel.model_validate(final_payload).model_dump(mode="json", exclude_unset=True)
-        )
+        result = SCIMUserModel.model_validate(final_payload).model_dump(mode="json", exclude_unset=True)
+        for attribute in NEVER_RETURNED:
+            result.pop(attribute, None)
+        return self.remove_excluded_attributes(result)
 
     def get(self, request: Request, user_id: str | None = None, **kwargs) -> Response:
         """List User handler"""
@@ -92,6 +97,7 @@ class UsersView(SCIMObjectView):
     @atomic
     def update_user(self, connection: SCIMSourceUser | None, data: QueryDict):
         """Partial update a user"""
+        data = {key: value for key, value in data.items() if key not in NEVER_RETURNED}
         properties = self.build_object_properties(data)
 
         if not properties.get("username"):
