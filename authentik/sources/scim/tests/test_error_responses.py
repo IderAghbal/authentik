@@ -36,11 +36,15 @@ class TestSCIMErrorResponses(APITestCase):
             content_type=SCIM_CONTENT_TYPE,
             **self.auth,
         ).json()
-        self.assertSCIMError(self.client.get(f"{self.base}/Users/{user['id']}/more", **self.auth), 404)
+        self.assertSCIMError(
+            self.client.get(f"{self.base}/Users/{user['id']}/more", **self.auth), 404
+        )
 
     def test_search_by_post(self):
         """A search by POST answers 501"""
-        response = self.client.post(f"{self.base}/.search", data="{}", content_type=SCIM_CONTENT_TYPE, **self.auth)
+        response = self.client.post(
+            f"{self.base}/.search", data="{}", content_type=SCIM_CONTENT_TYPE, **self.auth
+        )
         self.assertSCIMError(response, 501)
 
     def test_unparsable_body(self):
