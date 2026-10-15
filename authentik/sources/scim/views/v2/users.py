@@ -31,7 +31,7 @@ class UsersView(SCIMObjectView):
             schemas=[SCIM_USER_SCHEMA],
             id=str(scim_user.user.uuid),
             externalId=scim_user.external_id,
-            userName=scim_user.user.username,
+            userName=self.unnamespaced(scim_user.user.username),
             name=Name(
                 formatted=scim_user.user.name,
             ),
@@ -96,10 +96,11 @@ class UsersView(SCIMObjectView):
 
         if not properties.get("username"):
             raise ValidationError("Invalid user")
+        properties["username"] = self.namespaced(properties["username"])
 
         user = connection.user if connection else User()
-        if _user := User.objects.filter(username=properties.get("username")).first():
-            user = _user
+        if User.objects.filter(username=properties["username"]).exclude(pk=user.pk).exists():
+            raise SCIMConflictError("userName is already in use.")
         user.update_attributes(properties)
 
         if not connection:
@@ -119,13 +120,12 @@ class UsersView(SCIMObjectView):
 
     def post(self, request: Request, **kwargs) -> Response:
         """Create user handler"""
-        connection = SCIMSourceUser.objects.filter(
-            Q(
-                Q(user__uuid=request.data.get("id"))
-                | Q(user__username=request.data.get("userName"))
-            ),
-            source=self.source,
-        ).first()
+        match = Q(user__uuid=request.data.get("id")) | Q(
+            user__username=self.namespaced(request.data.get("userName") or "")
+        )
+        if request.data.get("externalId"):
+            match |= Q(external_id=request.data.get("externalId"))
+        connection = SCIMSourceUser.objects.filter(match, source=self.source).first()
         if connection:
             self.logger.debug("Found existing user")
             raise SCIMConflictError("Group with ID exists already.")

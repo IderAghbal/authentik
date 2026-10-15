@@ -120,7 +120,9 @@ class TestSCIMUsers(APITestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertTrue(
-            SCIMSourceUser.objects.filter(source=self.source, user__username=username).exists()
+            SCIMSourceUser.objects.filter(
+                source=self.source, user__username=f"{self.source.slug}.{username}"
+            ).exists()
         )
         self.assertTrue(
             Event.objects.filter(
