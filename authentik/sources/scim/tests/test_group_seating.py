@@ -108,13 +108,20 @@ class TestSCIMSourceSeatingGuard(SourceTestCase):
                 source.refresh_from_db()
                 self.assertIsNone(source.group)
 
+    def validation_errors(self, group: Group) -> dict[str, list[str]]:
+        try:
+            SCIMSource(name=generate_id(), slug=generate_id(), group=group).full_clean()
+        except ValidationError as exc:
+            return exc.message_dict
+        return {}
+
     def test_model_refuses(self):
-        """Validating a source refuses each privileged group"""
+        """Validating a source refuses each privileged group, on the group, and
+        takes any other"""
         for name, group in self.refused.items():
             with self.subTest(group=name):
-                source = SCIMSource(name=generate_id(), slug=generate_id(), group=group)
-                with self.assertRaises(ValidationError):
-                    source.full_clean()
+                self.assertIn("group", self.validation_errors(group))
+        self.assertNotIn("group", self.validation_errors(Group.objects.create(name=generate_id())))
 
     def test_sync_refuses_a_group_made_privileged(self):
         """A group that became privileged after the source named it seats
