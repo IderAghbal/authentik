@@ -94,6 +94,18 @@ class SCIMProvider(OutgoingSyncProvider, BackchannelProvider):
         blank=True,
         help_text=_("Group filters used to define sync-scope for groups."),
     )
+    group_scope_root = models.ForeignKey(
+        "authentik_core.group",
+        on_delete=models.SET_NULL,
+        null=True,
+        default=None,
+        blank=True,
+        related_name="+",
+        help_text=_(
+            "When set, sync only this group's descendants, never the group itself, and "
+            "only users in it or in its descendants."
+        ),
+    )
 
     url = models.TextField(help_text=_("Base URL to SCIM requests, usually ends in /v2"))
 
@@ -189,6 +201,10 @@ class SCIMProvider(OutgoingSyncProvider, BackchannelProvider):
                 base = base.exclude(type=UserTypes.SERVICE_ACCOUNT).exclude(
                     type=UserTypes.INTERNAL_SERVICE_ACCOUNT
                 )
+            if self.group_scope_root_id:
+                base = base.filter(
+                    pk__in=User.objects.filter(groups__in=self.scope_root_groups()).values("pk")
+                )
 
             # Filter users by their access to the backchannel application if an application is set
             # This handles both policy bindings and group_filters
@@ -206,6 +222,12 @@ class SCIMProvider(OutgoingSyncProvider, BackchannelProvider):
             # Get queryset of all groups with consistent ordering
             # according to the provider's settings
             base = Group.objects.prefetch_related("scimprovidergroup_set").all().filter(**kwargs)
+            if self.group_scope_root_id:
+                base = base.filter(
+                    pk__in=self.scope_root_groups()
+                    .exclude(pk=self.group_scope_root_id)
+                    .values("pk")
+                )
 
             # Filter groups by group_filters if set
             if self.group_filters.exists():
@@ -213,6 +235,10 @@ class SCIMProvider(OutgoingSyncProvider, BackchannelProvider):
 
             return base.order_by("pk")
         raise ValueError(f"Invalid type {type}")
+
+    def scope_root_groups(self) -> QuerySet[Group]:
+        """The scope root and every group below it"""
+        return Group.objects.filter(pk=self.group_scope_root_id).with_descendants()
 
     @classmethod
     def get_object_mappings(cls, obj: User | Group) -> list[tuple[str, str]]:

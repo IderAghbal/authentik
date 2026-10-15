@@ -1,10 +1,17 @@
 from django.db.models import Model
-from django.db.models.signals import post_delete, post_save
+from django.db.models.signals import post_delete, post_save, pre_delete
 from django.dispatch import receiver
 
-from authentik.core.models import USER_PATH_SYSTEM_PREFIX, Token, TokenIntents, User, UserTypes
+from authentik.core.models import (
+    USER_PATH_SYSTEM_PREFIX,
+    Group,
+    Token,
+    TokenIntents,
+    User,
+    UserTypes,
+)
 from authentik.events.middleware import audit_ignore
-from authentik.sources.scim.models import SCIMSource
+from authentik.sources.scim.models import SCIMSource, SCIMSourceUser
 
 USER_PATH_SOURCE_SCIM = USER_PATH_SYSTEM_PREFIX + "/sources/scim"
 
@@ -42,3 +49,13 @@ def scim_source_post_delete(sender: type[Model], instance: SCIMSource, **_):
     User.objects.filter(
         username=instance.service_account_identifier, type=UserTypes.INTERNAL_SERVICE_ACCOUNT
     ).delete()
+
+
+@receiver(pre_delete, sender=SCIMSourceUser)
+def scim_source_user_pre_delete(sender: type[Model], instance: SCIMSourceUser, **_):
+    """Unseat a user from its source's group when its connection goes"""
+    group_id = (
+        SCIMSource.objects.filter(pk=instance.source_id).values_list("group_id", flat=True).first()
+    )
+    if group_id:
+        Group.users.through.objects.filter(group_id=group_id, user_id=instance.user_id).delete()

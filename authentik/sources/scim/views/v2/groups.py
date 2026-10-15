@@ -16,11 +16,12 @@ from scim2_filter_parser.attr_paths import AttrPath
 from authentik.core.models import Group, User
 from authentik.providers.scim.clients.schema import SCIM_GROUP_SCHEMA, PatchOp, PatchOperation
 from authentik.providers.scim.clients.schema import Group as SCIMGroupModel
-from authentik.sources.scim.models import SCIMSourceGroup
+from authentik.sources.scim.models import SCIMSourceGroup, seating_refusal
 from authentik.sources.scim.patch.processor import SCIMPatchProcessor
 from authentik.sources.scim.views.v2.base import SCIMObjectView
 from authentik.sources.scim.views.v2.exceptions import (
     SCIMConflictError,
+    SCIMForbiddenError,
     SCIMNotFoundError,
     SCIMValidationError,
 )
@@ -93,12 +94,16 @@ class GroupsView(SCIMObjectView):
 
         if not properties.get("name"):
             raise ValidationError("Invalid group")
+        if self.source.group_id and (refusal := seating_refusal(self.source.group)):
+            raise SCIMForbiddenError(refusal)
 
         group = connection.group if connection else Group()
         if _group := Group.objects.filter(name=properties.get("name")).first():
             group = _group
 
         group.update_attributes(properties)
+        if not connection and self.source.group_id and group.pk != self.source.group_id:
+            group.parents.add(self.source.group_id)
 
         if "members" in data and apply_members:
             query = Q()

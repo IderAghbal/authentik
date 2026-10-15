@@ -3,6 +3,7 @@
 from typing import Any
 from uuid import uuid4
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.templatetags.static import static
 from django.utils.translation import gettext_lazy as _
@@ -12,11 +13,39 @@ from authentik.core.models import Group, PropertyMapping, Source, Token, User
 from authentik.lib.models import InternallyManagedMixin, SerializerModel
 
 
+def seating_refusal(group: Group) -> str | None:
+    """Why a source may not seat users in group, or None when it may. Whoever
+    a source provisions would be granted what the group grants, and a group
+    grants what every group above it grants."""
+    above = Group.objects.filter(pk=group.pk).with_ancestors()
+    if above.filter(is_superuser=True).exists():
+        return "A source may not seat users in a superuser group, or in a group below one."
+    if above.filter(roles__isnull=False).exists():
+        return "A source may not seat users in a group holding roles, or in a group below one."
+    return None
+
+
 class SCIMSource(Source):
     """System for Cross-domain Identity Management Source, allows for
     cross-system user provisioning"""
 
     token = models.ForeignKey(Token, on_delete=models.CASCADE, null=True, default=None)
+    group = models.ForeignKey(
+        Group,
+        on_delete=models.SET_NULL,
+        null=True,
+        default=None,
+        blank=True,
+        help_text=_(
+            "Group every user the source provisions is seated in, and every group it "
+            "creates is nested under."
+        ),
+    )
+
+    def clean(self):
+        super().clean()
+        if self.group_id and (refusal := seating_refusal(self.group)):
+            raise ValidationError({"group": refusal})
 
     @property
     def service_account_identifier(self) -> str:

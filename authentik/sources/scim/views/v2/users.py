@@ -14,10 +14,14 @@ from rest_framework.response import Response
 from authentik.core.models import User
 from authentik.providers.scim.clients.schema import SCIM_USER_SCHEMA, Email
 from authentik.providers.scim.clients.schema import User as SCIMUserModel
-from authentik.sources.scim.models import SCIMSourceUser
+from authentik.sources.scim.models import SCIMSourceUser, seating_refusal
 from authentik.sources.scim.patch.processor import SCIMPatchProcessor
 from authentik.sources.scim.views.v2.base import SCIMObjectView
-from authentik.sources.scim.views.v2.exceptions import SCIMConflictError, SCIMNotFoundError
+from authentik.sources.scim.views.v2.exceptions import (
+    SCIMConflictError,
+    SCIMForbiddenError,
+    SCIMNotFoundError,
+)
 
 
 class UsersView(SCIMObjectView):
@@ -96,6 +100,8 @@ class UsersView(SCIMObjectView):
 
         if not properties.get("username"):
             raise ValidationError("Invalid user")
+        if self.source.group_id and (refusal := seating_refusal(self.source.group)):
+            raise SCIMForbiddenError(refusal)
 
         user = connection.user if connection else User()
         if _user := User.objects.filter(username=properties.get("username")).first():
@@ -115,6 +121,8 @@ class UsersView(SCIMObjectView):
             connection.external_id = data.get("externalId", connection.external_id)
             connection.attributes = data
             connection.save()
+        if self.source.group_id:
+            self.source.group.users.add(connection.user)
         return connection
 
     def post(self, request: Request, **kwargs) -> Response:

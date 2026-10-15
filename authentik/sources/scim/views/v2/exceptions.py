@@ -46,6 +46,18 @@ class SCIMConflictError(SCIMValidationError):
         )
 
 
+class SCIMForbiddenError(SCIMValidationError):
+    status_code = 403
+
+    def __init__(self, detail: str):
+        super().__init__(
+            SCIMError(
+                detail=detail,
+                status=self.status_code,
+            )
+        )
+
+
 class SCIMNotFoundError(SCIMValidationError):
     status_code = 404
 
