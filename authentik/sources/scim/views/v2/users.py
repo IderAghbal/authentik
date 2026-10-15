@@ -23,7 +23,6 @@ from authentik.sources.scim.views.v2.exceptions import (
     SCIMNotFoundError,
 )
 
-
 # Attributes RFC 7643 marks `returned: never`: neither stored nor returned.
 NEVER_RETURNED = ("password",)
 
@@ -67,7 +66,9 @@ class UsersView(SCIMObjectView):
         )
         final_payload = payload.model_dump(mode="json", exclude_unset=True)
         final_payload.update(scim_user.attributes)
-        result = SCIMUserModel.model_validate(final_payload).model_dump(mode="json", exclude_unset=True)
+        result = SCIMUserModel.model_validate(final_payload).model_dump(
+            mode="json", exclude_unset=True
+        )
         for attribute in NEVER_RETURNED:
             result.pop(attribute, None)
         return self.remove_excluded_attributes(result)
