@@ -20,7 +20,8 @@ class TestSCIMUserConflictMessage(APITestCase):
         url = reverse("authentik_sources_scim:v2-users", kwargs={"source_slug": source.slug})
         auth = {"HTTP_AUTHORIZATION": f"Bearer {source.token.key}"}
         self.assertEqual(
-            self.client.post(url, data=body, content_type=SCIM_CONTENT_TYPE, **auth).status_code, 201
+            self.client.post(url, data=body, content_type=SCIM_CONTENT_TYPE, **auth).status_code,
+            201,
         )
         response = self.client.post(url, data=body, content_type=SCIM_CONTENT_TYPE, **auth)
         self.assertEqual(response.status_code, 409, response.content)
