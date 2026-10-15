@@ -122,6 +122,9 @@ class SCIMSourceUser(InternallyManagedMixin, SerializerModel):
         indexes = [
             models.Index(fields=["external_id"]),
         ]
+        constraints = [
+            models.UniqueConstraint(fields=["user"], name="scimsourceuser_one_source"),
+        ]
 
     def __str__(self) -> str:
         return f"SCIM User {self.user_id} to {self.source_id}"
@@ -147,6 +150,9 @@ class SCIMSourceGroup(InternallyManagedMixin, SerializerModel):
         unique_together = (("external_id", "source"),)
         indexes = [
             models.Index(fields=["external_id"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=["group"], name="scimsourcegroup_one_source"),
         ]
 
     def __str__(self) -> str:

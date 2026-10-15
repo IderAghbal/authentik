@@ -37,7 +37,7 @@ class GroupsView(SCIMObjectView):
             schemas=[SCIM_GROUP_SCHEMA],
             id=str(scim_group.group.pk),
             externalId=scim_group.external_id,
-            displayName=scim_group.group.name,
+            displayName=self.unnamespaced(scim_group.group.name),
             members=[],
             meta={
                 "resourceType": "Group",
@@ -93,10 +93,11 @@ class GroupsView(SCIMObjectView):
 
         if not properties.get("name"):
             raise ValidationError("Invalid group")
+        properties["name"] = self.namespaced(properties["name"])
 
         group = connection.group if connection else Group()
-        if _group := Group.objects.filter(name=properties.get("name")).first():
-            group = _group
+        if Group.objects.filter(name=properties["name"]).exclude(pk=group.pk).exists():
+            raise SCIMConflictError("displayName is already in use.")
 
         group.update_attributes(properties)
 
@@ -129,10 +130,12 @@ class GroupsView(SCIMObjectView):
 
     def post(self, request: Request, **kwargs) -> Response:
         """Create group handler"""
-        connection = SCIMSourceGroup.objects.filter(
-            source=self.source,
-            group__group_uuid=request.data.get("id"),
-        ).first()
+        match = Q(group__group_uuid=request.data.get("id")) | Q(
+            group__name=self.namespaced(request.data.get("displayName") or "")
+        )
+        if request.data.get("externalId"):
+            match |= Q(external_id=request.data.get("externalId"))
+        connection = SCIMSourceGroup.objects.filter(match, source=self.source).first()
         if connection:
             self.logger.debug("Found existing group")
             raise SCIMConflictError("Group with ID exists already.")

@@ -70,13 +70,13 @@ class SCIMView(APIView):
         attr_map = {}
         if self.model == User:
             attr_map = {
-                ("userName", None, None): "user__username",
+                ("userName", None, None): "attributes__userName",
                 ("active", None, None): "user__is_active",
                 ("name", "familyName", None): "attributes__familyName",
             }
         elif self.model == Group:
             attr_map = {
-                ("displayName", None, None): "group__name",
+                ("displayName", None, None): "attributes__displayName",
                 ("members", None, None): "group__users",
             }
         return get_query(
@@ -116,6 +116,16 @@ class SCIMObjectView(SCIMView):
                     UUID(value)
                 except ValueError:
                     raise SCIMNotFoundError("Invalid ID") from None
+
+    def namespaced(self, name: str) -> str:
+        """The name a user or group this source creates holds: the client's
+        name under the source's slug. A slug holds no dot, so no two
+        sources share a name."""
+        return f"{self.source.slug}.{name}"
+
+    def unnamespaced(self, name: str) -> str:
+        """The client's own name for a user or group of this source."""
+        return name.removeprefix(f"{self.source.slug}.")
 
     def build_object_properties(self, data: dict[str, Any]) -> dict[str, Any | dict[str, Any]]:
         return self.mapper.build_object_properties(
