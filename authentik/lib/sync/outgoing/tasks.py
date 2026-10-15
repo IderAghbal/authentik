@@ -1,3 +1,4 @@
+from django.core.cache import cache
 from django.core.paginator import Paginator
 from django.db.models import Model, QuerySet
 from django.db.models.query import Q
@@ -77,11 +78,36 @@ class SyncTasks:
             return
         task.info("Starting full provider sync")
         self.logger.debug("Starting provider sync")
+        rerun = f"goauthentik.io/providers/outgoing-sync/{provider.pk}/rerun"
+        if not self.sync_locked(task, provider, sync_objects, rerun):
+            # The sync holding the lock runs once more after releasing it. The
+            # request is recorded before the lock is tried again, so a sync that
+            # released it in between is followed by this one instead.
+            cache.set(rerun, True, timeout=None)
+            if not self.sync_locked(task, provider, sync_objects, rerun):
+                task.info("Synchronization is already running. It runs again once done.")
+                self.logger.debug(
+                    "Failed to acquire sync lock, requested a rerun", provider=provider.name
+                )
+                return
+        if cache.get(rerun):
+            cache.delete(rerun)
+            task.info("Synchronization was requested while running. Running again.")
+            provider.sync_dispatch()
+
+    def sync_locked(
+        self,
+        task: Task,
+        provider: OutgoingSyncProvider,
+        sync_objects: Actor[[str, int, int, bool], None],
+        rerun: str,
+    ) -> bool:
+        """Run a full sync under the provider's sync lock; False when another
+        sync holds it"""
         with provider.sync_lock as lock_acquired:
             if not lock_acquired:
-                task.info("Synchronization is already running. Skipping.")
-                self.logger.debug("Failed to acquire sync lock, skipping", provider=provider.name)
-                return
+                return False
+            cache.delete(rerun)
             try:
                 users_tasks = group(
                     self.sync_paginator(
@@ -109,7 +135,7 @@ class SyncTasks:
                 raise Retry() from exc
             except StopSync as exc:
                 task.error(exc)
-                return
+        return True
 
     def sync_objects(
         self,
