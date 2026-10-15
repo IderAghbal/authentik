@@ -1,6 +1,6 @@
 """SCIM URLs"""
 
-from django.urls import path
+from django.urls import path, re_path
 
 from authentik.sources.scim.api.groups import SCIMSourceGroupViewSet
 from authentik.sources.scim.api.property_mappings import SCIMSourcePropertyMappingViewSet
@@ -65,6 +65,11 @@ urlpatterns = [
         "<slug:source_slug>/v2/ResourceTypes/<str:resource_type>",
         resource_types.ResourceTypesView.as_view(),
         name="v2-resource-types",
+    ),
+    re_path(
+        r"^(?P<source_slug>[-a-zA-Z0-9_]+)/v2/(?P<rest>.*)$",
+        base.SCIMUnknownView.as_view(),
+        name="v2-unknown",
     ),
 ]
 
