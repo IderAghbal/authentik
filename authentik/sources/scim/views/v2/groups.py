@@ -1,5 +1,6 @@
 """SCIM Group Views"""
 
+from typing import Any
 from uuid import uuid4
 
 from django.db.models import Q
@@ -103,16 +104,7 @@ class GroupsView(SCIMObjectView):
         group.update_attributes(properties)
 
         if "members" in data and apply_members:
-            query = Q()
-            for _member in data.get("members", []):
-                try:
-                    member = GroupMember.model_validate(_member)
-                except PydanticValidationError as exc:
-                    self.logger.warning("Invalid group member", exc=exc)
-                    continue
-                query |= Q(uuid=member.value)
-            if query:
-                group.users.set(self.own_users(query))
+            self.set_members(group, self.member_query(data.get("members") or []))
         data["members"] = self._convert_members(group)
         if not connection:
             connection, _ = SCIMSourceGroup.objects.update_or_create(
@@ -179,6 +171,38 @@ class GroupsView(SCIMObjectView):
             return condition.get("value")
         return None
 
+    def member_query(self, members: Any) -> Q:
+        """The users a members value names, one member or a list of them,
+        skipping any entry that is not a member"""
+        query = Q()
+        for _member in members if isinstance(members, list) else [members]:
+            try:
+                member = GroupMember.model_validate(_member)
+            except PydanticValidationError as exc:
+                self.logger.warning("Invalid group member", exc=exc)
+                continue
+            query |= Q(uuid=member.value)
+        return query
+
+    def set_members(self, group: Group, query: Q):
+        """Make the users query names the group's members, none when it names none"""
+        group.users.set(self.own_users(query) if query else [])
+
+    def patch_members(self, group: Group, op: PatchOp, value: Any):
+        """Apply one PATCH operation to the group's members (RFC 7644 3.5.2):
+        add seats the users named, replace makes them the members, and remove
+        unseats them or, naming none, every member"""
+        if op == PatchOp.remove and value is None:
+            group.users.clear()
+            return
+        query = self.member_query(value)
+        if op == PatchOp.replace:
+            self.set_members(group, query)
+        elif query and op == PatchOp.add:
+            group.users.add(*self.own_users(query))
+        elif query and op == PatchOp.remove:
+            group.users.remove(*self.own_users(query))
+
     def _convert_members(self, group: Group):
         users = []
         for user in group.users.all().order_by("uuid"):
@@ -203,25 +227,17 @@ class GroupsView(SCIMObjectView):
                 connection.group.users.remove(*self.own_users(Q(uuid=member)))
                 continue
             operations.append(_op)
-            attr_path = AttrPath(f'{operation.path} eq ""', {})
-            if attr_path.first_path == ("members", None, None):
-                # FIXME: this can probably be de-duplicated
-                if operation.op == PatchOp.add:
-                    if not isinstance(operation.value, list):
-                        operation.value = [operation.value]
-                    query = Q()
-                    for member in operation.value:
-                        query |= Q(uuid=member["value"])
-                    if query:
-                        connection.group.users.add(*self.own_users(query))
-                elif operation.op == PatchOp.remove:
-                    if not isinstance(operation.value, list):
-                        operation.value = [operation.value]
-                    query = Q()
-                    for member in operation.value:
-                        query |= Q(uuid=member["value"])
-                    if query:
-                        connection.group.users.remove(*self.own_users(query))
+            if operation.path is None:
+                # A pathless add or replace names attributes with their values
+                # (RFC 7644 3.5.2.1, 3.5.2.3); a remove needs a path.
+                if (
+                    operation.op != PatchOp.remove
+                    and isinstance(operation.value, dict)
+                    and "members" in operation.value
+                ):
+                    self.patch_members(connection.group, operation.op, operation.value["members"])
+            elif AttrPath(f'{operation.path} eq ""', {}).first_path == ("members", None, None):
+                self.patch_members(connection.group, operation.op, operation.value)
         patcher = SCIMPatchProcessor()
         patched_data = patcher.apply_patches(connection.attributes, operations)
         patched_data["members"] = self._convert_members(connection.group)
