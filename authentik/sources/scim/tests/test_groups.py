@@ -14,6 +14,7 @@ from authentik.providers.scim.clients.schema import Group as SCIMGroupSchema
 from authentik.sources.scim.models import (
     SCIMSource,
     SCIMSourceGroup,
+    SCIMSourceUser,
 )
 from authentik.sources.scim.views.v2.base import SCIM_CONTENT_TYPE
 
@@ -23,6 +24,12 @@ class TestSCIMGroups(APITestCase):
 
     def setUp(self) -> None:
         self.source = SCIMSource.objects.create(name=generate_id(), slug=generate_id())
+
+    def provisioned_user(self):
+        """A user this source created, which its groups may seat."""
+        user = create_test_user()
+        SCIMSourceUser.objects.create(source=self.source, user=user, external_id=generate_id())
+        return user
 
     def test_group_list(self):
         """Test full group list"""
@@ -86,7 +93,7 @@ class TestSCIMGroups(APITestCase):
 
     def test_group_create_members(self):
         """Test group create"""
-        user = create_test_user()
+        user = self.provisioned_user()
         ext_id = generate_id()
         name = generate_id()
         response = self.client.post(
@@ -257,8 +264,8 @@ class TestSCIMGroups(APITestCase):
 
     def test_group_patch_member_add(self):
         """Test group patch"""
-        user = create_test_user()
-        other_user = create_test_user()
+        user = self.provisioned_user()
+        other_user = self.provisioned_user()
         group = Group.objects.create(name=generate_id())
         group.users.add(other_user)
         connection = SCIMSourceGroup.objects.create(
@@ -303,7 +310,7 @@ class TestSCIMGroups(APITestCase):
 
     def test_group_patch_member_remove(self):
         """Test group patch"""
-        user = create_test_user()
+        user = self.provisioned_user()
 
         group = Group.objects.create(name=generate_id())
         group.users.add(user)
