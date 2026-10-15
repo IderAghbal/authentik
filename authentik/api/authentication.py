@@ -106,9 +106,11 @@ class TokenAuthentication(BaseAuthentication):
         if not auth_credentials:
             return None
         # first, check traditional tokens
-        key_token = Token.filter_not_expired(
-            key=auth_credentials, intent=TokenIntents.INTENT_API
-        ).first()
+        key_token = (
+            Token.filter_not_expired(key=auth_credentials, intent=TokenIntents.INTENT_API)
+            .filter(scimsource__isnull=True)
+            .first()
+        )
         if key_token:
             CTX_AUTH_VIA.set("api_token")
             return key_token.user, key_token
