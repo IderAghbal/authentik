@@ -128,7 +128,7 @@ class UsersView(SCIMObjectView):
         connection = SCIMSourceUser.objects.filter(match, source=self.source).first()
         if connection:
             self.logger.debug("Found existing user")
-            raise SCIMConflictError("Group with ID exists already.")
+            raise SCIMConflictError("User with ID exists already.")
         connection = self.update_user(None, request.data)
         return Response(self.user_to_scim(connection), status=201)
 
