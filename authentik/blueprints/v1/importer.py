@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from typing import Any
 
+import pglock
 from dacite.config import Config
 from dacite.core import from_dict
 from dacite.exceptions import DaciteError
@@ -11,6 +12,7 @@ from deepmerge import always_merger
 from django.contrib.auth.models import Permission
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import FieldError
+from django.db import connection
 from django.db.models import Model
 from django.db.models.query_utils import Q
 from django.db.transaction import atomic
@@ -109,6 +111,15 @@ def transaction_rollback():
             raise DoRollback()
     except DoRollback:
         pass
+
+
+def apply_lock():
+    """Blueprint applications in a tenant take turns, each holding this lock until its
+    transaction ends: two at once deadlock where they write the same rows, and two of
+    the same blueprint apply it twice"""
+    pglock.advisory(
+        lock_id=f"goauthentik.io/{connection.schema_name}/blueprints/apply", xact=True
+    ).acquire()
 
 
 def rbac_models() -> dict:
@@ -340,6 +351,7 @@ class Importer:
         """Apply (create/update) models yaml, in database transaction"""
         try:
             with atomic():
+                apply_lock()
                 if not self._apply_models():
                     self.logger.debug("Reverting changes due to error")
                     raise IntegrityError
@@ -422,6 +434,7 @@ class Importer:
             transaction_rollback(),
             capture_logs() as logs,
         ):
+            apply_lock()
             successful = self._apply_models(raise_errors=raise_validation_errors)
             if not successful:
                 self.logger.warning("Blueprint validation failed")

@@ -9,6 +9,7 @@ from uuid import UUID
 from dacite.core import from_dict
 from django.conf import settings
 from django.db import DatabaseError, InternalError, ProgrammingError
+from django.db.transaction import atomic
 from django.utils.text import slugify
 from django.utils.timezone import now
 from django.utils.translation import gettext_lazy as _
@@ -31,7 +32,7 @@ from authentik.blueprints.models import (
     BlueprintRetrievalFailed,
 )
 from authentik.blueprints.v1.common import BlueprintLoader, BlueprintMetadata, EntryInvalidError
-from authentik.blueprints.v1.importer import Importer
+from authentik.blueprints.v1.importer import Importer, apply_lock
 from authentik.blueprints.v1.labels import LABEL_AUTHENTIK_INSTANTIATE
 from authentik.blueprints.v1.oci import OCI_PREFIX
 from authentik.events.logs import capture_logs
@@ -105,7 +106,9 @@ class BlueprintEventHandler(FileSystemEventHandler):
             with tenant:
                 for instance in BlueprintInstance.objects.filter(path=rel_path, enabled=True):
                     LOGGER.debug("modified blueprint file, starting apply", instance=instance)
-                    apply_blueprint.send_with_options(args=(instance.pk,), rel_obj=instance)
+                    apply_blueprint.send_with_options(
+                        args=(instance.pk,), kwargs={"if_changed": True}, rel_obj=instance
+                    )
 
 
 @actor(
@@ -184,11 +187,17 @@ def check_blueprint_v1_file(blueprint: BlueprintFile):
         )
     if instance.last_applied_hash != blueprint.hash:
         LOGGER.info("Applying blueprint due to changed file", instance=instance, path=instance.path)
-        apply_blueprint.send_with_options(args=(instance.pk,), rel_obj=instance)
+        apply_blueprint.send_with_options(
+            args=(instance.pk,), kwargs={"if_changed": True}, rel_obj=instance
+        )
 
 
 @actor(description=_("Apply single blueprint."))
-def apply_blueprint(instance_pk: UUID):
+def apply_blueprint(instance_pk: UUID, if_changed: bool = False):
+    """Apply a blueprint instance, after any application running in its tenant. With
+    if_changed, as its file's changes request it, an instance an application has
+    applied at its current content meanwhile, from the worker or from a blueprint
+    that applies it first, is not applied again."""
     self = CurrentTask.get_task()
     self.set_uid(str(instance_pk))
     instance: BlueprintInstance | None = None
@@ -203,25 +212,32 @@ def apply_blueprint(instance_pk: UUID):
             return
         blueprint_content = instance.retrieve()
         file_hash = sha512(blueprint_content.encode()).hexdigest()
-        importer = Importer.from_string(blueprint_content, instance.context)
-        if importer.blueprint.metadata:
-            instance.metadata = asdict(importer.blueprint.metadata)
-        valid, logs = importer.validate()
-        if not valid:
-            instance.status = BlueprintInstanceStatus.ERROR
-            instance.save()
-            self.logs(logs)
-            return
-        with capture_logs() as logs:
-            applied = importer.apply()
-            if not applied:
+        with atomic():
+            apply_lock()
+            instance.refresh_from_db()
+            if if_changed and instance.applied(file_hash):
+                self.info(f"Blueprint {instance.name} is applied at this content, skipping")
+                return
+            importer = Importer.from_string(blueprint_content, instance.context)
+            if importer.blueprint.metadata:
+                instance.metadata = asdict(importer.blueprint.metadata)
+            valid, logs = importer.validate()
+            if not valid:
                 instance.status = BlueprintInstanceStatus.ERROR
                 instance.save()
                 self.logs(logs)
                 return
-        instance.status = BlueprintInstanceStatus.SUCCESSFUL
-        instance.last_applied_hash = file_hash
-        instance.last_applied = now()
+            with capture_logs() as logs:
+                applied = importer.apply()
+                if not applied:
+                    instance.status = BlueprintInstanceStatus.ERROR
+                    instance.save()
+                    self.logs(logs)
+                    return
+            instance.status = BlueprintInstanceStatus.SUCCESSFUL
+            instance.last_applied_hash = file_hash
+            instance.last_applied = now()
+            instance.save()
     except (
         OSError,
         DatabaseError,
@@ -232,10 +248,8 @@ def apply_blueprint(instance_pk: UUID):
     ) as exc:
         if instance:
             instance.status = BlueprintInstanceStatus.ERROR
-        self.error(exc)
-    finally:
-        if instance:
             instance.save()
+        self.error(exc)
 
 
 @actor(description=_("Remove blueprints which couldn't be fetched."))

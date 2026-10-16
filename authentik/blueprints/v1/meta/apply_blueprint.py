@@ -1,7 +1,10 @@
 """Apply Blueprint meta model"""
 
+from dataclasses import asdict
+from hashlib import sha512
 from typing import TYPE_CHECKING
 
+from django.utils.timezone import now
 from rest_framework.exceptions import ValidationError
 from rest_framework.fields import BooleanField
 from structlog.stdlib import get_logger
@@ -37,21 +40,35 @@ class ApplyBlueprintMetaSerializer(PassiveSerializer):
         return super().validate(attrs)
 
     def create(self, validated_data: dict) -> MetaResult:
+        from authentik.blueprints.models import BlueprintInstanceStatus
         from authentik.blueprints.v1.importer import Importer
 
         if not self.blueprint_instance:
             LOGGER.info("Blueprint does not exist, but not required")
             return MetaResult()
-        LOGGER.debug("Applying blueprint from meta model", blueprint=self.blueprint_instance)
+        instance = self.blueprint_instance
+        blueprint_content = instance.retrieve()
+        content_hash = sha512(blueprint_content.encode()).hexdigest()
+        # The application this entry is part of holds the apply lock, so no other
+        # applies this blueprint meanwhile: one applied at its content already is
+        # not applied again, and one applied here is recorded as its own task would.
+        if instance.applied(content_hash):
+            LOGGER.debug("Blueprint from meta model is applied at its content", blueprint=instance)
+            return MetaResult()
+        LOGGER.debug("Applying blueprint from meta model", blueprint=instance)
 
         # Apply blueprint directly using Importer to avoid task context requirements
         # and prevent deadlocks when called from within another blueprint task
-        blueprint_content = self.blueprint_instance.retrieve()
-        importer = Importer.from_string(blueprint_content, self.blueprint_instance.context)
+        importer = Importer.from_string(blueprint_content, instance.context)
         valid, logs = importer.validate()
         [log.log() for log in logs]
-        if valid:
-            importer.apply()
+        if valid and importer.apply():
+            if importer.blueprint.metadata:
+                instance.metadata = asdict(importer.blueprint.metadata)
+            instance.status = BlueprintInstanceStatus.SUCCESSFUL
+            instance.last_applied_hash = content_hash
+            instance.last_applied = now()
+            instance.save()
         return MetaResult()
 
 

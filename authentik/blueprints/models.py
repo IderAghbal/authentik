@@ -92,6 +92,13 @@ class BlueprintInstance(SerializerModel, ManagedModel, CreatedUpdatedModel):
     def __str__(self) -> str:
         return f"Blueprint Instance {self.name}"
 
+    def applied(self, content_hash: str) -> bool:
+        """Whether this instance's last application succeeded at the content of this hash"""
+        return (
+            self.status == BlueprintInstanceStatus.SUCCESSFUL
+            and self.last_applied_hash == content_hash
+        )
+
     def retrieve_oci(self) -> str:
         """Get blueprint from an OCI registry"""
         client = BlueprintOCIClient(self.path.replace(OCI_PREFIX, "https://"))
