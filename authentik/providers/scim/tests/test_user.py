@@ -445,12 +445,14 @@ class SCIMUserTests(TestCase):
             self.assertEqual(mock.call_count, 1)
             for request in mock.request_history:
                 self.assertIn(request.method, SAFE_METHODS)
-        task = list(
+        task = (
             Task.objects.filter(
                 actor_name=scim_sync_objects.actor_name,
-                _uid__startswith=self.provider.name,
-            ).order_by("-mtime")
-        )[1]
+                _uid=f"{self.provider.name}:user:1",
+            )
+            .order_by("-mtime")
+            .first()
+        )
         self.assertIsNotNone(task)
         log = task.tasklogs.filter(event="Dropping mutating request due to dry run").first()
         self.assertIsNotNone(log)

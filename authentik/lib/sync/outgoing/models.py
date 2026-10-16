@@ -80,12 +80,18 @@ class OutgoingSyncProvider(ScheduledModel, Model):
 
     @property
     def sync_lock(self) -> pglock.advisory:
-        """Postgres lock for syncing to prevent multiple parallel syncs happening"""
+        """Postgres lock, held to the end of a transaction, under which a full sync's lease
+        is taken, counted down and released"""
         return pglock.advisory(
             lock_id=f"goauthentik.io/{connection.schema_name}/providers/outgoing-sync/{str(self.pk)}",
-            timeout=0,
-            side_effect=pglock.Return,
+            xact=True,
         )
+
+    @property
+    def sync_lease(self) -> str:
+        """Cache key of the running full sync's lease, held from its start until its last
+        page settles or its time limit passes, so only one full sync runs at a time"""
+        return f"goauthentik.io/providers/outgoing-sync/{self.pk}/run"
 
     @property
     def sync_actor(self) -> Actor:
