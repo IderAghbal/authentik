@@ -1,7 +1,13 @@
+from time import time
+from uuid import uuid4
+
+from django.core.cache import cache
 from django.core.paginator import Paginator
 from django.db.models import Model, QuerySet
 from django.db.models.query import Q
+from django.db.transaction import atomic
 from dramatiq.actor import Actor
+from dramatiq.broker import get_broker
 from dramatiq.composition import group
 from dramatiq.errors import Retry
 from structlog.stdlib import BoundLogger, get_logger
@@ -42,6 +48,7 @@ class SyncTasks:
         sync_objects: Actor[[str, int, int, bool], None],
         paginator: Paginator,
         object_type: type[User | Group],
+        full_sync: str | None = None,
         **options,
     ):
         tasks = []
@@ -49,6 +56,7 @@ class SyncTasks:
         for page in paginator.page_range:
             page_sync = sync_objects.message_with_options(
                 args=(class_to_path(object_type), page, provider.pk),
+                kwargs={"full_sync": full_sync} if full_sync else {},
                 time_limit=time_limit,
                 # Assign tasks to the same schedule as the current one
                 rel_obj=current_task.rel_obj,
@@ -77,41 +85,121 @@ class SyncTasks:
             return
         task.info("Starting full provider sync")
         self.logger.debug("Starting provider sync")
-        with provider.sync_lock as lock_acquired:
-            if not lock_acquired:
+        # A full sync dispatches its pages and ends: waiting for them would hold a
+        # worker thread the pages need. Its lease stands for the lock until the
+        # last page settles.
+        run = uuid4().hex
+        deadline = time() + provider.get_sync_time_limit_ms() / 1000
+        with atomic():
+            provider.sync_lock.acquire()
+            if cache.get(provider.sync_lease) is not None:
                 task.info("Synchronization is already running. Skipping.")
-                self.logger.debug("Failed to acquire sync lock, skipping", provider=provider.name)
+                self.logger.debug("A full sync holds the lease, skipping", provider=provider.name)
                 return
-            try:
-                users_tasks = group(
-                    self.sync_paginator(
-                        current_task=task,
-                        provider=provider,
-                        sync_objects=sync_objects,
-                        paginator=provider.get_paginator(User),
-                        object_type=User,
-                    )
-                )
-                group_tasks = group(
-                    self.sync_paginator(
-                        current_task=task,
-                        provider=provider,
-                        sync_objects=sync_objects,
-                        paginator=provider.get_paginator(Group),
-                        object_type=Group,
-                    )
-                )
-                users_tasks.run().wait(timeout=provider.get_object_sync_time_limit_ms(User))
-                group_tasks.run().wait(timeout=provider.get_object_sync_time_limit_ms(Group))
-            except TransientSyncException as exc:
-                self.logger.warning("transient sync exception", exc=exc)
-                task.warning("Sync encountered a transient exception. Retrying", exc=exc)
-                raise Retry() from exc
-            except StopSync as exc:
-                task.error(exc)
+            lease = {"run": run, "deadline": deadline, "phase": None}
+            cache.set(provider.sync_lease, lease, timeout=max(deadline - time(), 1))
+        try:
+            self.sync_phase(task, provider, sync_objects, run, User)
+        except TransientSyncException as exc:
+            self.sync_release(task, provider, run)
+            self.logger.warning("transient sync exception", exc=exc)
+            task.warning("Sync encountered a transient exception. Retrying", exc=exc)
+            raise Retry() from exc
+        except StopSync as exc:
+            self.sync_release(task, provider, run)
+            task.error(exc)
+
+    def sync_phase(
+        self,
+        task: Task,
+        provider: OutgoingSyncProvider,
+        sync_objects: Actor[[str, int, int, bool], None],
+        run: str,
+        object_type: type[User | Group],
+    ):
+        """Dispatch a full sync's pages of object_type, users before groups, and record in
+        its lease how many it waits for. A phase with no pages moves on, and the lease is
+        released after the groups."""
+        pages = self.sync_paginator(
+            current_task=task,
+            provider=provider,
+            sync_objects=sync_objects,
+            paginator=provider.get_paginator(object_type),
+            object_type=object_type,
+            full_sync=run,
+        )
+        if not pages and object_type is Group:
+            self.sync_release(task, provider, run)
+            return
+        if pages:
+            with atomic():
+                provider.sync_lock.acquire()
+                lease = cache.get(provider.sync_lease)
+                if not lease or lease["run"] != run:
+                    return
+                lease["phase"] = class_to_path(object_type)
+                lease["remaining"] = len(pages)
+                cache.set(provider.sync_lease, lease, timeout=max(lease["deadline"] - time(), 1))
+                group(pages).run()
+            return
+        self.sync_phase(task, provider, sync_objects, run, Group)
+
+    def sync_release(self, task: Task, provider: OutgoingSyncProvider, run: str):
+        """Release the lease of the full sync run, unless it expired and another took it"""
+        with atomic():
+            provider.sync_lock.acquire()
+            lease = cache.get(provider.sync_lease)
+            if lease and lease["run"] == run:
+                cache.delete(provider.sync_lease)
+
+    def page_settled(self, provider_pk: int, full_sync: str, object_type: str, page: int):
+        """A full sync's page is done or has failed: the last page of users dispatches the
+        groups' pages, and the last of the groups' releases the lease. A page counts once,
+        however often it is tried, and a page of a run whose lease expired counts for none."""
+        provider: OutgoingSyncProvider | None = self._provider_model.objects.filter(
+            pk=provider_pk
+        ).first()
+        if not provider:
+            return
+        task = CurrentTask.get_task()
+        with atomic():
+            provider.sync_lock.acquire()
+            lease = cache.get(provider.sync_lease)
+            if not lease or lease["run"] != full_sync or lease["phase"] != object_type:
                 return
+            timeout = max(lease["deadline"] - time(), 1)
+            settled = f"{provider.sync_lease}/{full_sync}/{object_type}/{page}"
+            if cache.get(settled):
+                return
+            cache.set(settled, True, timeout=timeout)
+            lease["remaining"] -= 1
+            if lease["remaining"] == 0:
+                lease["phase"] = None
+            cache.set(provider.sync_lease, lease, timeout=timeout)
+            if lease["remaining"] > 0:
+                return
+        if object_type == class_to_path(User):
+            sync_objects = get_broker().get_actor(task.actor_name)
+            self.sync_phase(task, provider, sync_objects, full_sync, Group)
+        else:
+            self.sync_release(task, provider, full_sync)
 
     def sync_objects(
+        self,
+        object_type: str,
+        page: int,
+        provider_pk: int,
+        override_dry_run=False,
+        full_sync: str | None = None,
+        **filter,
+    ):
+        try:
+            self.sync_page(object_type, page, provider_pk, override_dry_run, **filter)
+        finally:
+            if full_sync:
+                self.page_settled(provider_pk, full_sync, object_type, page)
+
+    def sync_page(
         self,
         object_type: str,
         page: int,

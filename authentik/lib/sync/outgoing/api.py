@@ -1,3 +1,4 @@
+from django.core.cache import cache
 from django.db.models import Model
 from dramatiq.actor import Actor
 from dramatiq.results.errors import ResultFailure
@@ -57,9 +58,7 @@ class OutgoingSyncProviderStatusMixin:
 
         status = {}
 
-        with provider.sync_lock as lock_acquired:
-            # If we could not acquire the lock, it means a task is using it, and thus is running
-            status["is_running"] = not lock_acquired
+        status["is_running"] = cache.get(provider.sync_lease) is not None
 
         sync_schedule = None
         for schedule in provider.schedules.all():
