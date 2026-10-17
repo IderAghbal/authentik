@@ -20,6 +20,10 @@ class SAMLSourceSerializer(SourceSerializer):
     """SAMLSource Serializer"""
 
     def validate(self, attrs: dict):
+        # The issuer is optional, and the column takes no null: a source made
+        # without one stores none, and answers with its metadata URL.
+        if self.instance is None and attrs.get("issuer") is None:
+            attrs["issuer"] = ""
         if attrs.get("verification_kp"):
             if not attrs.get("signed_assertion") and not attrs.get("signed_response"):
                 raise ValidationError(
