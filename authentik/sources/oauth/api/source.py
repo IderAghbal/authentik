@@ -59,14 +59,28 @@ class OAuthSourceSerializer(SourceSerializer):
 
     def validate(self, attrs: dict) -> dict:
         session = get_http_session()
-        # A partial update names only what it changes: the type is the
-        # source's own unless it names another.
-        provider_type_name = attrs.get(
-            "provider_type", self.instance.provider_type if self.instance else ""
-        )
+        stored = self.instance
+
+        def held(key: str):
+            # A partial update names only what it changes: what it leaves out
+            # stays as the source holds it.
+            return attrs[key] if key in attrs else getattr(stored, key, None)
+
+        provider_type_name = held("provider_type") or ""
         source_type = registry.find_type(provider_type_name)
 
-        well_known = attrs.get("oidc_well_known_url") or source_type.oidc_well_known_url
+        well_known = held("oidc_well_known_url") or source_type.oidc_well_known_url
+        # What a source took from its discovery document stands while the
+        # document does. A new source, or an update moving one to another
+        # document, takes each field from the document unless the update
+        # names it; any other update fills only what the source lacks.
+        fresh = stored is None or well_known != (
+            stored.oidc_well_known_url or stored.source_type.oidc_well_known_url
+        )
+
+        def kept(key: str) -> bool:
+            return bool(attrs.get(key) if fresh else held(key))
+
         inferred_oidc_jwks_url = None
 
         if well_known and well_known != "":
@@ -87,7 +101,7 @@ class OAuthSourceSerializer(SourceSerializer):
             }
             for ak_key, oidc_key in field_map.items():
                 # Don't overwrite user-set values
-                if ak_key in attrs and attrs[ak_key]:
+                if kept(ak_key):
                     continue
                 attrs[ak_key] = config.get(oidc_key, "")
             # The document lists the methods the IdP supports; the source
@@ -102,9 +116,25 @@ class OAuthSourceSerializer(SourceSerializer):
             inferred_oidc_jwks_url = config.get("jwks_uri", "")
 
         # Prefer user-entered URL to inferred URL to default URL
-        jwks_url = attrs.get("oidc_jwks_url") or inferred_oidc_jwks_url or source_type.oidc_jwks_url
+        jwks_url = (
+            (attrs.get("oidc_jwks_url") if fresh else held("oidc_jwks_url"))
+            or inferred_oidc_jwks_url
+            or source_type.oidc_jwks_url
+        )
+        # The keys follow the URL: fetched for a new source, for a URL the
+        # update names or moves to, or where the source holds none, unless
+        # the update names the keys.
+        refetch = stored is None or (
+            not attrs.get("oidc_jwks")
+            and (
+                "oidc_jwks_url" in attrs
+                or jwks_url != stored.oidc_jwks_url
+                or not held("oidc_jwks")
+            )
+        )
         if jwks_url and jwks_url != "":
             attrs["oidc_jwks_url"] = jwks_url
+        if jwks_url and refetch:
             try:
                 jwks_config = session.get(jwks_url)
                 jwks_config.raise_for_status()
