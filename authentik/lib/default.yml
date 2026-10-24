@@ -121,6 +121,7 @@ cookie_domain: null
 disable_update_check: false
 disable_startup_analytics: false
 events:
+  retention: null
   context_processors:
     geoip: "/geoip/GeoLite2-City.mmdb"
     asn: "/geoip/GeoLite2-ASN.mmdb"
