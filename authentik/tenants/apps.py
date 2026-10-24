@@ -12,7 +12,7 @@ LOGGER = get_logger()
 
 def ensure_default_tenant(*args, using=DEFAULT_DB_ALIAS, **kwargs):
     """Make sure default tenant exists, and hold its event retention to events.retention
-    when the configuration sets one"""
+    and its impersonation switch to the configured impersonation when they are set"""
     from django.core.exceptions import ValidationError
     from django_tenants.utils import schema_context
 
@@ -28,6 +28,12 @@ def ensure_default_tenant(*args, using=DEFAULT_DB_ALIAS, **kwargs):
             defaults["event_retention"] = retention
         except ValidationError:
             LOGGER.error("events.retention is not a duration, event retention left as it is")
+    impersonation = CONFIG.get("impersonation")
+    if impersonation is not None and impersonation != "":
+        if str(impersonation).lower() in ("true", "false"):
+            defaults["impersonation"] = str(impersonation).lower() == "true"
+        else:
+            LOGGER.error("impersonation is neither true nor false, impersonation left as it is")
     with schema_context(get_public_schema_name()):
         Tenant.objects.using(using).update_or_create(
             defaults=defaults,
